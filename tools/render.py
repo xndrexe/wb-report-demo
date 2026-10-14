@@ -39,9 +39,14 @@ tr.total td { font-weight: 700; }
 """
 
 
-def fmt(v) -> str:
+ID_COLS = {"ID", "Артикул WB"}  # номера, а не суммы — без пробелов между разрядами
+
+
+def fmt(v, is_id: bool = False) -> str:
     if v is None:
         return ""
+    if is_id:
+        return str(v)
     if isinstance(v, float) and not v.is_integer():
         return f"{v:,.1f}".replace(",", " ").replace(".", ",")
     if isinstance(v, int | float):
@@ -53,16 +58,17 @@ def render_sheet(path: Path, title: str, caption: str, rows: int = 100) -> str:
     ws = load_workbook(path)[title]
     data = list(ws.iter_rows())
     picked = [data[0], *data[1:-1][:rows], data[-1]] if len(data) - 2 > rows else data
+    ids = {j for j, c in enumerate(data[0]) if c.value in ID_COLS}
     out = []
     for i, row in enumerate(picked):
         tag = "th" if i == 0 else "td"
         is_total = row[0].value == "Итого"
         cells = []
-        for c in row:
+        for j, c in enumerate(row):
             color = c.fill.fgColor.rgb if c.fill.patternType == "solid" else None
             style = f' style="background:#{color[-6:]}"' if color else ""
             cls = ' class="num"' if tag == "td" and isinstance(c.value, int | float) else ""
-            cells.append(f"<{tag}{cls}{style}>{escape(fmt(c.value))}</{tag}>")
+            cells.append(f"<{tag}{cls}{style}>{escape(fmt(c.value, j in ids))}</{tag}>")
         out.append(f"<tr{' class=total' if is_total else ''}>" + "".join(cells) + "</tr>")
     return (
         f"<!doctype html><meta charset=utf-8><style>{CSS}</style>"

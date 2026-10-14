@@ -152,6 +152,11 @@ def stocks_sheet(stocks: list[dict], orders: list[dict], days: int) -> Sheet:
     return sheet
 
 
+def _stamp(ts: str) -> str:
+    """2026-10-14T09:48:00 → 14.10.2026 09:48."""
+    return f"{ts[8:10]}.{ts[5:7]}.{ts[:4]} {ts[11:16]}" if ts else ""
+
+
 def ads_sheet(ads: list[dict]) -> Sheet:
     """Расходы по кампаниям за период."""
     camp: dict[int, dict] = {}
@@ -174,7 +179,7 @@ def ads_sheet(ads: list[dict]) -> Sheet:
                 AD_TYPES.get(c["type"], str(c["type"])),
                 _num(c["sum"]),
                 c["n"],
-                c["last"][:16].replace("T", " "),
+                _stamp(c["last"]),
             ]
         )
     sheet.total = [
