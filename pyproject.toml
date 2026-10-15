@@ -1,7 +1,7 @@
 [project]
 name = "wb-report-demo"
 version = "0.1.0"
-description = "Отчёт по продажам, остаткам и рекламе Wildberries в Google Таблице или Excel"
+description = "Отчёт по продажам, остаткам и рекламе Wildberries и Ozon в Google Таблице или Excel"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
