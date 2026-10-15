@@ -10,8 +10,8 @@ from openpyxl.utils import get_column_letter
 
 from .report import Sheet
 
-HEAD = PatternFill("solid", fgColor="7B2D8E")  # фиолетовый WB
-TOTAL = PatternFill("solid", fgColor="EFE6F3")
+# цвет шапки и строки «Итого» — в цветах площадки
+THEMES = {"wb": ("7B2D8E", "EFE6F3"), "ozon": ("005BFF", "E5EEFF")}
 WARN = PatternFill("solid", fgColor="F8D7DA")
 
 
@@ -19,7 +19,8 @@ def _values(sheet: Sheet) -> list[list]:
     return [sheet.headers, *sheet.rows, *([sheet.total] if sheet.total else [])]
 
 
-def to_excel(sheets: list[Sheet], path: Path) -> Path:
+def to_excel(sheets: list[Sheet], path: Path, theme: str = "wb") -> Path:
+    head, total = (PatternFill("solid", fgColor=c) for c in THEMES[theme])
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     wb.remove(wb.active)
@@ -29,7 +30,7 @@ def to_excel(sheets: list[Sheet], path: Path) -> Path:
             ws.append(row)
         for cell in ws[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = HEAD
+            cell.fill = head
             cell.alignment = Alignment(wrap_text=True, vertical="center")
         ws.row_dimensions[1].height = 32
         for i, title in enumerate(sh.headers, start=1):
@@ -49,7 +50,7 @@ def to_excel(sheets: list[Sheet], path: Path) -> Path:
         if sh.total:
             for cell in ws[ws.max_row]:
                 cell.font = Font(bold=True)
-                cell.fill = TOTAL
+                cell.fill = total
         ws.freeze_panes = "B2"
         ws.auto_filter.ref = f"A1:{get_column_letter(len(sh.headers))}{len(sh.rows) + 1}"
     tmp = path.with_suffix(".tmp.xlsx")
