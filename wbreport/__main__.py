@@ -29,9 +29,12 @@ def run_once(cfg: config.Settings, client: WBClient, today: date | None = None) 
         len(stocks),
         len(ads),
     )
-    in_period = [o for o in orders if o["date"][:10] >= start.isoformat()]
+    # только строки внутри периода: более поздние (если today в прошлом) не должны
+    # попадать в среднее число заказов в день на листе остатков
+    lo, hi = start.isoformat(), end.isoformat()
+    in_period = [o for o in orders if lo <= o["date"][:10] <= hi]
     sheets = report.build(
-        in_period, [s for s in sales if s["date"][:10] >= start.isoformat()], stocks, ads, start, end
+        in_period, [s for s in sales if lo <= s["date"][:10] <= hi], stocks, ads, start, end
     )
     export.to_excel(sheets, cfg.excel_path)
     log.info("excel saved: %s", cfg.excel_path)
@@ -41,10 +44,18 @@ def run_once(cfg: config.Settings, client: WBClient, today: date | None = None) 
     return sheets
 
 
+def _days(v: str) -> int:
+    """--days: целое не меньше 1, иначе период выходит пустым или «задом наперёд»."""
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("нужно целое число дней, не меньше 1")
+    return n
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="wbreport", description="Отчёт Wildberries в таблицу")
     ap.add_argument("--demo", action="store_true", help="выдуманный магазин на местном сервере вместо WB")
-    ap.add_argument("--days", type=int, help="за сколько дней (по умолчанию из .env, 30)")
+    ap.add_argument("--days", type=_days, help="за сколько дней (по умолчанию из .env, 30)")
     ap.add_argument("--every", type=int, default=0, metavar="MIN", help="повторять каждые MIN минут")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

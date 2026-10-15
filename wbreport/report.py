@@ -176,7 +176,7 @@ def ads_sheet(ads: list[dict]) -> Sheet:
             [
                 c["name"],
                 cid,
-                AD_TYPES.get(c["type"], str(c["type"])),
+                AD_TYPES.get(c["type"], "" if c["type"] is None else str(c["type"])),  # без «None» в ячейке
                 _num(c["sum"]),
                 c["n"],
                 _stamp(c["last"]),
