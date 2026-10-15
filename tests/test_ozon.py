@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 
 from wbreport import __main__ as app
 from wbreport import config, ozon_api, ozon_fake, ozon_report
-from wbreport.ozon_api import OzonClient, OzonError
+from wbreport.ozon_api import OzonAdsClient, OzonClient, OzonError
 
 TODAY = date(2026, 10, 14)
 SINCE = datetime(2026, 8, 25, tzinfo=UTC)
@@ -99,6 +99,76 @@ def test_server_gives_up_after_attempts(data):
     with ozon_fake.FakeOzon(data, fail={"/v4/product/info/stocks": [500] * 4}) as srv:
         with pytest.raises(OzonError, match="не ответил"):
             client(srv).products()
+
+
+@pytest.fixture
+def ads_data():
+    return ozon_fake.generate_ads(TODAY, days=45)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def ads_client(perf, secret=ozon_fake.ADS_SECRET, clock=None, sleeps=None):
+    return OzonAdsClient(
+        ozon_fake.ADS_CLIENT_ID,
+        secret,
+        url=perf.url,
+        sleep=(sleeps.append if sleeps is not None else lambda s: None),
+        clock=clock or Clock(),
+    )
+
+
+def test_ads_token_is_reused_and_renewed_before_expiry(ads_data):
+    clock = Clock()
+    with ozon_fake.FakePerformance(ads_data) as perf:
+        c = ads_client(perf, clock=clock)
+        c.campaigns()
+        c.daily(date(2026, 10, 1), date(2026, 10, 7))
+        clock.now += 1800 - 59  # меньше минуты до конца срока — берём новый заранее
+        c.campaigns()
+        token_calls = [b for p, b in perf.calls if p == "/api/client/token"]
+    assert len(token_calls) == 2
+    assert token_calls[0] == {
+        "client_id": ozon_fake.ADS_CLIENT_ID,
+        "client_secret": ozon_fake.ADS_SECRET,
+        "grant_type": "client_credentials",
+    }
+
+
+def test_ads_revoked_token_is_fetched_again_once(ads_data):
+    with ozon_fake.FakePerformance(ads_data) as perf:
+        c = ads_client(perf)
+        c.campaigns()
+        perf.revoke()
+        assert len(c.campaigns()) == len(ozon_fake.CAMPAIGNS)
+        assert sum(p == "/api/client/token" for p, _ in perf.calls) == 2
+
+
+def test_ads_bad_secret_is_a_clear_error(ads_data):
+    with ozon_fake.FakePerformance(ads_data) as perf, pytest.raises(OzonError, match="client_secret"):
+        ads_client(perf, secret="wrong").campaigns()
+
+
+def test_ads_daily_cut_into_62_day_exports(ads_data):
+    with ozon_fake.FakePerformance(ads_data) as perf:
+        rows = ads_client(perf).daily(date(2026, 6, 1), TODAY)
+        spans = [(b["dateFrom"], b["dateTo"]) for p, b in perf.calls if p.endswith("/daily/json")]
+    assert spans == [("2026-06-01", "2026-08-01"), ("2026-08-02", "2026-10-02"), ("2026-10-03", "2026-10-14")]
+    assert len(rows) == len(ads_data["daily"])
+
+
+def test_ads_rate_limit_is_retried(ads_data):
+    sleeps = []
+    path = "/api/client/statistics/daily/json"
+    with ozon_fake.FakePerformance(ads_data, fail={path: [429, 502]}) as perf:
+        rows = ads_client(perf, sleeps=sleeps).daily(TODAY, TODAY)
+    assert sleeps == [1.0, 10] and rows
 
 
 # --- разбор ------------------------------------------------------------------
@@ -196,6 +266,90 @@ def test_stocks_days_left_from_ozon_and_own_warehouse():
     assert sh.warn == (len(sh.headers) - 1, 14)
 
 
+def test_rub_reads_comma_spaces_and_numbers():
+    assert ozon_report._rub("2764,63") == 2764.63
+    assert ozon_report._rub("1 234,50") == 1234.5
+    assert ozon_report._rub("1\u00a0234,50") == 1234.5
+    assert ozon_report._rub("1193.39") == 1193.39
+    assert ozon_report._rub(100) == 100.0
+    assert ozon_report._rub("") == 0.0 and ozon_report._rub(None) == 0.0
+
+
+def ad(cid, day, spent, views=1000, clicks=30, orders=2, money="3000,00", title="Пледы"):
+    return {
+        "id": cid,
+        "title": title,
+        "date": day,
+        "views": str(views),
+        "clicks": str(clicks),
+        "moneySpent": spent,
+        "orders": str(orders),
+        "ordersMoney": money,
+    }
+
+
+def test_sales_sheet_with_ads_spend_and_drr_by_day():
+    postings = [posting("2026-10-14T07:00:00Z", price="2000.00", qty=2)]
+    ads = [ad("1", "2026-10-14", "300,00"), ad("2", "2026-10-14", "100,00"), ad("1", "2026-10-13", "50,00")]
+    sh = ozon_report.sales_sheet(postings, [], [], date(2026, 10, 13), D, ads)
+    assert sh.headers[-2:] == ["Реклама, ₽", "ДРР, %"] and 10 in sh.money_cols
+    assert sh.rows[0][-2:] == [400, 10.0]  # 400 ₽ рекламы к 4000 ₽ заказов
+    assert sh.rows[1][-2:] == [50, ""]  # заказов нет — ДРР не считаем
+    assert sh.total[-2:] == [450, 11.2]
+
+
+def test_sales_sheet_without_ads_key_has_no_ad_columns():
+    sh = ozon_report.sales_sheet([], [], [], D, D)
+    assert "Реклама, ₽" not in sh.headers and len(sh.rows[0]) == len(sh.headers) == 10
+    with_key = ozon_report.sales_sheet([], [], [], D, D, [])
+    assert with_key.rows[0][-2:] == [0, ""]  # ключ есть, расхода не было — честный ноль
+
+
+def test_ads_sheet_by_campaign():
+    campaigns = [
+        {"id": "1", "title": "Пледы — поиск", "advObjectType": "SKU", "state": "CAMPAIGN_STATE_RUNNING"},
+        {
+            "id": "2",
+            "title": "Все товары",
+            "advObjectType": "SEARCH_PROMO",
+            "state": "CAMPAIGN_STATE_STOPPED",
+        },
+        {"id": "3", "title": "Архив", "advObjectType": "SKU", "state": "CAMPAIGN_STATE_ARCHIVED"},
+        {"id": "5", "title": "Новое", "advObjectType": "NEW_KIND", "state": "CAMPAIGN_STATE_NEW"},
+    ]
+    daily = [
+        ad("1", "2026-10-13", "300,00", views=1000, clicks=30, orders=2, money="3 000,00"),
+        ad("1", "2026-10-14", "0,00", views=0, clicks=0, orders=0, money="0,00"),
+        ad("2", "2026-10-14", "1 000,50", views=4000, clicks=40, orders=5, money="10005,00"),
+        ad("3", "2026-10-14", "0,00", views=0, clicks=0, orders=0, money="0,00"),  # нет показов — не выводим
+        ad("4", "2026-10-12", "10,00", views=100, clicks=1, orders=0, money="0,00", title="Без карточки"),
+        ad("5", "2026-10-12", "20,00", views=100, clicks=2, orders=0, money="0,00"),
+    ]
+    sh = ozon_report.ads_sheet(campaigns, daily)
+    assert [r[1] for r in sh.rows] == [2, 1, 5, 4]  # больше расход — выше
+    assert sh.rows[0] == [
+        "Все товары",
+        2,
+        "Оплата за заказ",
+        "Кончился бюджет",
+        1000.5,
+        4000,
+        40,
+        1.0,
+        5,
+        10005,
+        10.0,
+        1,
+        "14.10.2026",
+    ]
+    assert sh.rows[1][2:] == ["Оплата за клик", "Идёт", 300, 1000, 30, 3.0, 2, 3000, 10.0, 1, "13.10.2026"]
+    assert sh.rows[2][2:4] == ["NEW_KIND", "CAMPAIGN_STATE_NEW"]  # новое у Ozon — как есть, а не пусто
+    assert sh.rows[3][:4] == ["Без карточки", 4, "", ""]
+    assert sh.rows[3][10] == ""  # заказов с рекламы нет — ДРР не считаем
+    assert sh.total == ["Итого", "", "", "", 1330.5, 5200, 73, 1.4, 7, 13005, 10.2, "", ""]
+    assert sh.money_cols == {4, 9}
+
+
 def test_items_sheet_returns_share_and_top_reason():
     postings = [posting("2026-10-14T07:00:00Z", qty=1) for _ in range(5)]
     postings.append(posting("2026-10-14T07:00:00Z", status="cancelled"))
@@ -230,7 +384,12 @@ def test_run_ozon_matches_raw_data(cfg, data):
     assert acc_days[0] == "2026-09-15" and acc_days[-1] == "2026-10-14" and len(acc_days) == 30
 
     wb = load_workbook(cfg.excel_path)
-    assert wb.sheetnames == ["Продажи и заказы", "Остатки", "Заказы и возвраты по товарам"]
+    assert wb.sheetnames == [
+        "Продажи и заказы",
+        "Остатки",
+        "Заказы и возвраты по товарам",
+    ]  # без ключа рекламы
+    assert "Реклама, ₽" not in sheets[0].headers
     assert wb["Продажи и заказы"]["A1"].fill.fgColor.rgb.endswith("005BFF")  # цвета Ozon
 
     lo, hi = "2026-09-15", "2026-10-14"
@@ -253,12 +412,34 @@ def test_run_ozon_matches_raw_data(cfg, data):
     assert cell.fill.fgColor.rgb.endswith("F8D7DA")
 
 
+def test_run_ozon_with_ads_matches_raw_data(cfg, data, ads_data):
+    with ozon_fake.FakeOzon(data) as srv, ozon_fake.FakePerformance(ads_data) as perf:
+        sheets = app.run_ozon(cfg, client(srv), today=TODAY, ads=ads_client(perf))
+        daily_calls = [b for p, b in perf.calls if p.endswith("/daily/json")]
+    assert daily_calls == [{"dateFrom": "2026-09-15", "dateTo": "2026-10-14"}]
+
+    wb = load_workbook(cfg.excel_path)
+    assert wb.sheetnames == ["Продажи и заказы", "Остатки", "Реклама", "Заказы и возвраты по товарам"]
+    spent = sum(ozon_report._rub(r["moneySpent"]) for r in ads_data["daily"] if r["date"] >= "2026-09-15")
+    days = list(wb["Продажи и заказы"].values)
+    assert days[0][-2:] == ("Реклама, ₽", "ДРР, %")
+    assert days[-1][-2] == pytest.approx(spent) and days[-1][-1] == round(100 * spent / days[-1][4], 1)
+    assert 0 < days[-1][-1] < 20
+    ads = list(wb["Реклама"].values)
+    assert ads[-1][0] == "Итого" and ads[-1][4] == pytest.approx(spent)
+    titles = {r[0] for r in ads[1:-1]}
+    assert "Халаты — весна" not in titles  # архивная, в периоде расхода не было
+    assert "Баннер «Осенний уют»" in titles  # выключена, но тратила в начале периода
+    assert sheets[2].title == "Реклама"
+
+
 def test_demo_mode_ozon_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setenv("EXCEL_PATH", str(tmp_path / "demo.xlsx"))
     app.main(["--market", "ozon", "--demo", "--days", "7"])
     wb = load_workbook(tmp_path / "demo.xlsx")
     assert len(list(wb["Продажи и заказы"].values)) == 9
-    assert "Заказы и возвраты по товарам" in wb.sheetnames
+    assert wb.sheetnames == ["Продажи и заказы", "Остатки", "Реклама", "Заказы и возвраты по товарам"]
+    assert len(list(wb["Реклама"].values)) >= 4
 
 
 def test_ozon_without_key_stops_with_hint(monkeypatch):
@@ -282,8 +463,24 @@ def test_market_flag_overrides_env(monkeypatch, tmp_path):
     monkeypatch.delenv("EXCEL_PATH", raising=False)
     monkeypatch.setenv("MARKETPLACE", "wb")
     seen = {}
-    monkeypatch.setattr(app, "run_ozon", lambda cfg, c: seen.setdefault("cfg", cfg))
+    monkeypatch.setattr(app, "run_ozon", lambda cfg, c, ads=None: seen.update(cfg=cfg, ads=ads))
     monkeypatch.setenv("OZON_CLIENT_ID", "1")
     monkeypatch.setenv("OZON_API_KEY", "k")
+    monkeypatch.delenv("OZON_PERF_CLIENT_ID", raising=False)
     app.main(["--market", "ozon"])
     assert seen["cfg"].market == "ozon" and seen["cfg"].excel_path.name == "ozon_report.xlsx"
+    assert seen["ads"] is None  # без ключа Performance API — отчёт без рекламы, а не ошибка
+
+
+def test_ads_client_only_with_performance_key(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app, "run_ozon", lambda cfg, c, ads=None: seen.update(ads=ads))
+    monkeypatch.setenv("MARKETPLACE", "ozon")
+    monkeypatch.setenv("OZON_CLIENT_ID", "1")
+    monkeypatch.setenv("OZON_API_KEY", "seller-key")
+    monkeypatch.setenv("OZON_PERF_CLIENT_ID", "42@advertising.performance.ozon.ru")
+    monkeypatch.setenv("OZON_PERF_CLIENT_SECRET", "s")
+    app.main([])
+    assert isinstance(seen["ads"], OzonAdsClient)
+    assert seen["ads"].client_id == "42@advertising.performance.ozon.ru" and seen["ads"].client_secret == "s"
+    assert seen["ads"].url == "https://api-performance.ozon.ru"
