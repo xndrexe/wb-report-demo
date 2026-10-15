@@ -7,16 +7,24 @@ import contextlib
 import logging
 import time
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from . import config, export, report
 from .api import WBClient
 
 log = logging.getLogger("wbreport")
 
+# WB отдаёт даты по Москве без пояса: «сегодня» считаем так же, а не по часам сервера
+MSK = ZoneInfo("Europe/Moscow")
+
+
+def today_msk() -> date:
+    return datetime.now(MSK).date()
+
 
 def run_once(cfg: config.Settings, client: WBClient, today: date | None = None) -> list[report.Sheet]:
-    end = today or date.today()
+    end = today or today_msk()
     start = end - timedelta(days=cfg.days - 1)
     orders = client.orders(start)
     sales = client.sales(start)
@@ -68,7 +76,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.demo:
             from . import fake
 
-            srv = stack.enter_context(fake.FakeWB(fake.generate(date.today())))
+            srv = stack.enter_context(fake.FakeWB(fake.generate(today_msk())))
             cfg = replace(cfg, token=fake.TOKEN, stats_url=srv.url, analytics_url=srv.url, advert_url=srv.url)
             interval = 0.0
             log.info("demo mode: fake WB at %s", srv.url)

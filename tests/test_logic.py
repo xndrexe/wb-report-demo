@@ -308,3 +308,19 @@ def test_config_from_env(monkeypatch, tmp_path):
     assert cfg.stats_url == "http://s"
     monkeypatch.setenv("EXCEL_PATH", str(tmp_path / "a.xlsx"))
     assert config.load().excel_path == tmp_path / "a.xlsx"
+
+
+def test_run_once_today_is_moscow_date(tmp_path, monkeypatch):
+    # 22:30 UTC 14.10 — в Москве уже 15.10: заказ 15.10 по МСК должен попасть в период
+    class Clock(app.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return app.datetime(2026, 10, 14, 22, 30, tzinfo=app.ZoneInfo("UTC")).astimezone(tz)
+
+    monkeypatch.setattr(app, "datetime", Clock)
+    cfg = replace(config.load(), days=1, excel_path=tmp_path / "r.xlsx", gsheet_id="", google_credentials="")
+    orders = [{"date": "2026-10-15T01:00:00", "nmId": 1, "priceWithDisc": 100}]
+    fc = FakeClient(orders)
+    sheets = app.run_once(cfg, fc)
+    assert fc.asked["orders"] == date(2026, 10, 15)
+    assert sheets[0].rows[0][:2] == ["15.10.2026", 1]
