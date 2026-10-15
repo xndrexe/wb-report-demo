@@ -1,7 +1,7 @@
-"""Выдуманный магазин на Ozon и местный сервер с теми же адресами и форматом ответов, что у Seller API.
+"""Выдуманный магазин на Ozon и местные серверы с адресами и форматом ответов Seller API и Performance API.
 
-Нужен для демо и тестов: клиент ходит к нему по настоящему HTTP, как к Ozon.
-Магазин «Уютный дом», товары, склады, возвраты и начисления — выдуманы.
+Нужен для демо и тестов: клиент ходит к ним по настоящему HTTP, как к Ozon.
+Магазин «Уютный дом», товары, склады, возвраты, начисления и рекламные кампании — выдуманы.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import random
 import threading
 from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 from .ozon_report import MSK
 
@@ -28,6 +29,53 @@ CLUSTERS = ["Москва, МО и Дальние регионы", "Санкт-�
 REASONS = ["Не подошёл размер", "Не понравился цвет", "Товар с браком", "Передумал покупать"]
 CLIENT_ID = "demo-client"
 API_KEY = "demo-key"
+ADS_CLIENT_ID = "demo-ads@advertising.performance.ozon.ru"
+ADS_SECRET = "demo-ads-secret"
+# id, название, тип, состояние, оплата, старт и стоп (дней назад), расход в день, CTR %, конверсия %, чек
+CAMPAIGNS = [
+    (
+        2140001,
+        "Пледы — продвижение в поиске",
+        "SKU",
+        "CAMPAIGN_STATE_RUNNING",
+        "CPC",
+        60,
+        0,
+        2200,
+        3.1,
+        4.5,
+        2100,
+    ),
+    (2140002, "Подушки и полотенца", "SKU", "CAMPAIGN_STATE_RUNNING", "CPC", 40, 0, 1300, 2.6, 5.5, 1150),
+    (
+        2140003,
+        "Оплата за заказ — все товары",
+        "SEARCH_PROMO",
+        "CAMPAIGN_STATE_RUNNING",
+        "CPO",
+        90,
+        0,
+        1800,
+        2.2,
+        6.0,
+        1900,
+    ),
+    (
+        2140004,
+        "Баннер «Осенний уют»",
+        "BANNER",
+        "CAMPAIGN_STATE_INACTIVE",
+        "CPM",
+        45,
+        12,
+        900,
+        0.6,
+        1.5,
+        2600,
+    ),
+    (2140005, "Скатерти — тест", "SKU", "CAMPAIGN_STATE_STOPPED", "CPC", 35, 6, 450, 2.0, 3.0, 1090),
+    (2140006, "Халаты — весна", "SKU", "CAMPAIGN_STATE_ARCHIVED", "CPC", 200, 150, 500, 2.0, 3.0, 2790),
+]
 
 
 def _z(ts: datetime) -> str:
@@ -191,6 +239,55 @@ def generate(today: date, days: int = 45, seed: int = 11) -> dict:
     }
 
 
+def _money(v: float) -> str:
+    """Сумма как в Performance API: строкой, с запятой."""
+    return f"{v:.2f}".replace(".", ",")
+
+
+def generate_ads(today: date, days: int = 45, seed: int = 12) -> dict:
+    """Кампании и их дневная статистика (строка на кампанию × день, как /statistics/daily/json)."""
+    rnd = random.Random(seed)
+    campaigns, daily = [], []
+    for cid, title, kind, state, pay, start, stop, spend, ctr, conv, check in CAMPAIGNS:
+        campaigns.append(
+            {
+                "id": str(cid),
+                "title": title,
+                "advObjectType": kind,
+                "state": state,
+                "paymentType": pay,
+                "fromDate": (today - timedelta(days=start)).isoformat(),
+                "toDate": "",
+                "dailyBudget": str(spend * 2 * 1_000_000),  # бюджеты — в миллионных долях рубля
+                "placement": ["PLACEMENT_SEARCH_AND_CATEGORY"],
+            }
+        )
+        for back in range(min(start, days), -1, -1):
+            day = today - timedelta(days=back)
+            off = back < stop
+            if off and back < stop - 3:  # после остановки Ozon ещё пару дней отдаёт нулевые строки
+                continue
+            share = 0.5 if day == today else 1.0
+            spent = 0.0 if off else max(0.0, rnd.gauss(spend, spend * 0.25)) * share
+            clicks = round(spent / max(spend / 120, 1)) if spent else 0
+            views = round(clicks * 100 / ctr) if clicks else 0
+            orders = sum(rnd.random() < conv / 100 for _ in range(clicks))
+            daily.append(
+                {
+                    "id": str(cid),
+                    "title": title,
+                    "date": day.isoformat(),
+                    "views": str(views),
+                    "clicks": str(clicks),
+                    "moneySpent": _money(spent),
+                    "avgBid": _money(spent / clicks if clicks else 0),
+                    "orders": str(orders),
+                    "ordersMoney": _money(orders * check * rnd.uniform(0.9, 1.1)),
+                }
+            )
+    return {"campaigns": campaigns, "daily": daily}
+
+
 def _return(rnd: random.Random, posting: dict, kind: str, at: datetime, schema: str) -> dict:
     item = posting["products"][0]
     price = item["price"]["amount"] if isinstance(item["price"], dict) else item["price"]
@@ -310,3 +407,63 @@ class FakeOzon:
             "has_next": end < len(rows),
             "cursor": str(end) if end < len(rows) else "",
         }
+
+
+class FakePerformance:
+    """Местный сервер Performance API: токен, кампании, дневная статистика. Лимит — 62 дня за выгрузку."""
+
+    def __init__(self, data: dict, fail: dict[str, list[int]] | None = None, expires_in: int = 1800):
+        self.data = data
+        self.fail = fail or {}
+        self.expires_in = expires_in
+        self.tokens: set[str] = set()
+        self.calls: list[tuple[str, dict]] = []
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                fake._handle(self, self.path, body)
+
+            def do_GET(self):
+                url = urlsplit(self.path)
+                fake._handle(self, url.path, {k: v[0] for k, v in parse_qs(url.query).items()})
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    __enter__ = FakeOzon.__enter__
+    __exit__ = FakeOzon.__exit__
+    _reply = FakeOzon._reply
+
+    def revoke(self) -> None:
+        """Отозвать выданные токены раньше срока — клиент должен взять новый."""
+        self.tokens.clear()
+
+    def _handle(self, h, path: str, body: dict) -> None:
+        self.calls.append((path, body))
+        if self.fail.get(path):
+            return self._reply(h, self.fail[path].pop(0), {"error": "too many requests"})
+        if path == "/api/client/token":
+            if (body.get("client_id"), body.get("client_secret")) != (ADS_CLIENT_ID, ADS_SECRET) or body.get(
+                "grant_type"
+            ) != "client_credentials":
+                return self._reply(h, 401, {"error": "invalid_client"})
+            token = f"demo-token-{len(self.calls)}"
+            self.tokens.add(token)
+            return self._reply(
+                h, 200, {"access_token": token, "expires_in": self.expires_in, "token_type": "Bearer"}
+            )
+        if h.headers.get("Authorization", "").removeprefix("Bearer ") not in self.tokens:
+            return self._reply(h, 401, {"code": 16, "message": "Запрос не аутентифицирован"})
+        if path == "/api/client/campaign":
+            return self._reply(h, 200, {"list": self.data["campaigns"]})
+        if path == "/api/client/statistics/daily/json":
+            lo, hi = body.get("dateFrom", ""), body.get("dateTo", "")
+            if (date.fromisoformat(hi) - date.fromisoformat(lo)).days + 1 > 62:
+                return self._reply(h, 400, {"code": 3, "message": "date range is too long"})
+            return self._reply(h, 200, {"rows": [r for r in self.data["daily"] if lo <= r["date"] <= hi]})
+        return self._reply(h, 404, {"code": 5, "message": "not found"})

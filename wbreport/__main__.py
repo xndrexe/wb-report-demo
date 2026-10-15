@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from . import config, export, ozon_report, report
 from .api import WBClient
-from .ozon_api import OzonClient
+from .ozon_api import OzonAdsClient, OzonClient
 
 log = logging.getLogger("wbreport")
 
@@ -50,8 +50,10 @@ def run_once(cfg: config.Settings, client: WBClient, today: date | None = None) 
     return sheets
 
 
-def run_ozon(cfg: config.Settings, client: OzonClient, today: date | None = None) -> list[report.Sheet]:
-    """Отчёт Ozon: период — московские сутки, а Ozon ждёт границы в UTC."""
+def run_ozon(
+    cfg: config.Settings, client: OzonClient, today: date | None = None, ads: OzonAdsClient | None = None
+) -> list[report.Sheet]:
+    """Отчёт Ozon: период — московские сутки, а Ozon ждёт границы в UTC. ads=None — без рекламы."""
     end = today or today_msk()
     start = end - timedelta(days=cfg.days - 1)
     since = datetime.combine(start, dtime.min, MSK).astimezone(UTC)
@@ -70,7 +72,11 @@ def run_ozon(cfg: config.Settings, client: OzonClient, today: date | None = None
         len(fbo),
         len(accruals),
     )
-    sheets = ozon_report.build(postings, returns, products, fbo, accruals, start, end)
+    campaigns, ad_daily = None, None
+    if ads:
+        campaigns, ad_daily = ads.campaigns(), ads.daily(start, end)  # дни рекламы Ozon уже московские
+        log.info("ozon ads: %d campaigns, %d day rows", len(campaigns), len(ad_daily))
+    sheets = ozon_report.build(postings, returns, products, fbo, accruals, start, end, campaigns, ad_daily)
     _save(cfg, sheets, "ozon")
     return sheets
 
@@ -127,14 +133,26 @@ def _ozon_runner(cfg: config.Settings, demo: bool, stack: contextlib.ExitStack):
         from . import ozon_fake
 
         srv = stack.enter_context(ozon_fake.FakeOzon(ozon_fake.generate(today_msk())))
+        perf = stack.enter_context(ozon_fake.FakePerformance(ozon_fake.generate_ads(today_msk())))
         cfg = replace(
-            cfg, ozon_client_id=ozon_fake.CLIENT_ID, ozon_api_key=ozon_fake.API_KEY, ozon_url=srv.url
+            cfg,
+            ozon_client_id=ozon_fake.CLIENT_ID,
+            ozon_api_key=ozon_fake.API_KEY,
+            ozon_url=srv.url,
+            ozon_ads_client_id=ozon_fake.ADS_CLIENT_ID,
+            ozon_ads_secret=ozon_fake.ADS_SECRET,
+            ozon_ads_url=perf.url,
         )
-        log.info("demo mode: fake Ozon at %s", srv.url)
+        log.info("demo mode: fake Ozon at %s, fake Performance API at %s", srv.url, perf.url)
     if not (cfg.ozon_client_id and cfg.ozon_api_key):
         raise SystemExit("Нет ключа: впишите OZON_CLIENT_ID и OZON_API_KEY в .env или запустите с --demo")
     client = OzonClient(cfg.ozon_client_id, cfg.ozon_api_key, url=cfg.ozon_url)
-    return lambda: run_ozon(cfg, client)
+    ads = None
+    if cfg.ozon_ads_client_id and cfg.ozon_ads_secret:
+        ads = OzonAdsClient(cfg.ozon_ads_client_id, cfg.ozon_ads_secret, url=cfg.ozon_ads_url)
+    else:
+        log.info("ozon ads skipped: no OZON_PERF_CLIENT_ID / OZON_PERF_CLIENT_SECRET")
+    return lambda: run_ozon(cfg, client, ads=ads)
 
 
 def _wb_runner(cfg: config.Settings, demo: bool, stack: contextlib.ExitStack):

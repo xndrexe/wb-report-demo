@@ -10,6 +10,12 @@
 - /v1/finance/accrual/by-day — начисления за день (замена /v3/finance/transaction/list,
   отключённого летом 2026).
 Все даты Ozon — в UTC с «Z» на конце.
+
+Реклама — отдельный Performance API (api-performance.ozon.ru, документация версии 2.0, 2026) со своим
+ключом: client_id и client_secret сервисного аккаунта, по ним токен на 30 минут (/api/client/token).
+- /api/client/campaign — список кампаний: название, тип, состояние;
+- /api/client/statistics/daily/json — по кампании за день: показы, клики, расход, заказы штуками и
+  рублями; суммы строкой с запятой («2764,63»), дни — московские; не больше 62 дней за выгрузку.
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ FBS_PAGE = 100
 RETURNS_PAGE = 500
 SKU_BATCH = 100
 CHUNK_DAYS = 7
+AD_MAX_DAYS = 62  # лимит Performance API на выгрузку статистики
+TOKEN_MARGIN = 60  # новый токен — за минуту до истечения старого
 
 
 class OzonError(RuntimeError):
@@ -37,6 +45,19 @@ class OzonError(RuntimeError):
 
 def _z(ts: datetime) -> str:
     return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _send(call: Callable[[], requests.Response], path: str, sleep, attempts: int) -> requests.Response:
+    """Запрос с повтором на 429 и сбоях Ozon; пауза — из Retry-After или своя, растущая."""
+    for attempt in range(1, attempts + 1):
+        resp = call()
+        if resp.status_code != 429 and resp.status_code < 500:
+            return resp
+        delay = float(resp.headers.get("Retry-After", 0) or 0) or min(60, 5 * attempt)
+        log.warning("%s -> %s, retry in %.0fs (%d/%d)", path, resp.status_code, delay, attempt, attempts)
+        if attempt < attempts:
+            sleep(delay)
+    raise OzonError(f"{path}: Ozon не ответил за {attempts} попытки")
 
 
 class OzonClient:
@@ -55,25 +76,14 @@ class OzonClient:
         self.sleep = sleep
 
     def _post(self, path: str, body: dict, attempts: int = 4) -> dict:
-        for attempt in range(1, attempts + 1):
-            resp = self.session.post(self.url + path, json=body, timeout=60)
-            if resp.status_code == 429 or resp.status_code >= 500:
-                delay = float(resp.headers.get("Retry-After", 0) or 0) or min(60, 5 * attempt)
-                log.warning(
-                    "%s -> %s, retry in %.0fs (%d/%d)", path, resp.status_code, delay, attempt, attempts
-                )
-                if attempt == attempts:
-                    break
-                self.sleep(delay)
-                continue
-            if resp.status_code in (401, 403):
-                raise OzonError(
-                    f"{path}: доступ запрещён ({resp.status_code}) — проверьте Client-Id и API-ключ"
-                )
-            if resp.status_code >= 400:
-                raise OzonError(f"{path}: ошибка {resp.status_code}: {resp.text[:200]}")
-            return resp.json()
-        raise OzonError(f"{path}: Ozon не ответил за {attempts} попытки")
+        resp = _send(
+            lambda: self.session.post(self.url + path, json=body, timeout=60), path, self.sleep, attempts
+        )
+        if resp.status_code in (401, 403):
+            raise OzonError(f"{path}: доступ запрещён ({resp.status_code}) — проверьте Client-Id и API-ключ")
+        if resp.status_code >= 400:
+            raise OzonError(f"{path}: ошибка {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
 
     @staticmethod
     def _chunks(since: datetime, to: datetime) -> Iterator[tuple[datetime, datetime]]:
@@ -180,3 +190,85 @@ class OzonClient:
             if not got or not nxt or nxt == last_id:
                 return rows
             last_id = nxt
+
+
+class OzonAdsClient:
+    """Performance API: кампании и их дневная статистика. Только чтение."""
+
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        *,
+        url: str,
+        session: requests.Session | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.url = url
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.session = session or requests.Session()
+        self.sleep = sleep
+        self.clock = clock
+        self._token = ""
+        self._expires = 0.0
+
+    def _auth(self) -> str:
+        if self._token and self.clock() < self._expires - TOKEN_MARGIN:
+            return self._token
+        path = "/api/client/token"
+        body = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "client_credentials",
+        }
+        resp = _send(lambda: self.session.post(self.url + path, json=body, timeout=60), path, self.sleep, 4)
+        if resp.status_code >= 400:
+            raise OzonError(
+                f"{path}: ключ рекламы не принят ({resp.status_code}) — проверьте client_id и client_secret"
+                " Performance API"
+            )
+        data = resp.json()
+        self._token = data["access_token"]
+        self._expires = self.clock() + float(data.get("expires_in") or 1800)
+        return self._token
+
+    def _get(self, path: str, params: dict | None = None):
+        for fresh in (False, True):  # токен могли отозвать раньше срока — один раз берём новый
+            if fresh:
+                self._token = ""
+            headers = {"Authorization": f"Bearer {self._auth()}"}
+            resp = _send(
+                lambda h=headers: self.session.get(self.url + path, params=params, headers=h, timeout=120),
+                path,
+                self.sleep,
+                4,
+            )
+            if resp.status_code not in (401, 403):
+                break
+        if resp.status_code in (401, 403):
+            raise OzonError(
+                f"{path}: доступ к рекламе запрещён ({resp.status_code}) — проверьте ключ Performance API"
+            )
+        if resp.status_code >= 400:
+            raise OzonError(f"{path}: ошибка {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
+    def campaigns(self) -> list[dict]:
+        """Все кампании кабинета, включая остановленные и архивные: расход за период мог быть и у них."""
+        return self._get("/api/client/campaign").get("list") or []
+
+    def daily(self, date_from: date, date_to: date) -> list[dict]:
+        """Строка на кампанию × день; длинный период режется на куски по 62 дня."""
+        rows: list[dict] = []
+        start = date_from
+        while start <= date_to:
+            end = min(start + timedelta(days=AD_MAX_DAYS - 1), date_to)
+            page = self._get(
+                "/api/client/statistics/daily/json",
+                {"dateFrom": start.isoformat(), "dateTo": end.isoformat()},
+            )
+            rows.extend(page.get("rows") or [])
+            start = end + timedelta(days=1)
+        return rows

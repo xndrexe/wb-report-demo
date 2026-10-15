@@ -25,6 +25,9 @@ class Settings:
     ozon_client_id: str
     ozon_api_key: str
     ozon_url: str
+    ozon_ads_client_id: str  # Performance API — свой ключ, не Seller API; пусто — отчёт без рекламы
+    ozon_ads_secret: str
+    ozon_ads_url: str
 
 
 MARKETS = ("wb", "ozon")
@@ -55,4 +58,7 @@ def load() -> Settings:
         ozon_client_id=env("OZON_CLIENT_ID", ""),
         ozon_api_key=env("OZON_API_KEY", ""),
         ozon_url=env("OZON_URL", "https://api-seller.ozon.ru"),
+        ozon_ads_client_id=env("OZON_PERF_CLIENT_ID", ""),
+        ozon_ads_secret=env("OZON_PERF_CLIENT_SECRET", ""),
+        ozon_ads_url=env("OZON_PERF_URL", "https://api-performance.ozon.ru"),
     )
