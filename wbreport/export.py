@@ -13,6 +13,9 @@ from .report import Sheet
 # цвет шапки и строки «Итого» — в цветах площадки
 THEMES = {"wb": ("7B2D8E", "EFE6F3"), "ozon": ("005BFF", "E5EEFF")}
 WARN = PatternFill("solid", fgColor="F8D7DA")
+# названия кампаний, товаров и причины возвратов приходят из кабинета: текст с «=» в начале
+# Excel и Google сочли бы формулой (=HYPERLINK, =IMPORTXML могут увести данные наружу)
+FORMULA_START = ("=", "+", "-", "@")
 
 
 def _values(sheet: Sheet) -> list[list]:
@@ -28,6 +31,9 @@ def to_excel(sheets: list[Sheet], path: Path, theme: str = "wb") -> Path:
         ws = wb.create_sheet(sh.title)
         for row in _values(sh):
             ws.append(row)
+            for cell in ws[ws.max_row]:
+                if cell.data_type == "f":  # openpyxl пишет строку с «=» как формулу — храним текстом
+                    cell.data_type = "s"
         for cell in ws[1]:
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = head
@@ -59,13 +65,21 @@ def to_excel(sheets: list[Sheet], path: Path, theme: str = "wb") -> Path:
     return path
 
 
+def _gsheet_values(sheet: Sheet) -> list[list]:
+    """Текст, похожий на формулу, — с апострофом: при USER_ENTERED Google его не исполнит и не покажет."""
+    return [
+        [f"'{v}" if isinstance(v, str) and v.startswith(FORMULA_START) else v for v in row]
+        for row in _values(sheet)
+    ]
+
+
 def to_gsheet(sheets: list[Sheet], sheet_id: str, credentials: str) -> None:
     """Перезаливает листы в Google Таблицу. Таблицу нужно расшарить на почту сервисного аккаунта."""
     import gspread  # нужен только при выгрузке в Google
 
     book = gspread.service_account(filename=credentials).open_by_key(sheet_id)
     for sh in sheets:
-        values = _values(sh)
+        values = _gsheet_values(sh)
         try:
             ws = book.worksheet(sh.title)
         except gspread.WorksheetNotFound:

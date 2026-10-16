@@ -27,6 +27,8 @@ from datetime import date, datetime, timedelta
 
 import requests
 
+from .api import retry_delay
+
 log = logging.getLogger(__name__)
 
 FBO_PAGE = 1000
@@ -53,7 +55,7 @@ def _send(call: Callable[[], requests.Response], path: str, sleep, attempts: int
         resp = call()
         if resp.status_code != 429 and resp.status_code < 500:
             return resp
-        delay = float(resp.headers.get("Retry-After", 0) or 0) or min(60, 5 * attempt)
+        delay = retry_delay(resp.headers.get("Retry-After"), attempt)
         log.warning("%s -> %s, retry in %.0fs (%d/%d)", path, resp.status_code, delay, attempt, attempts)
         if attempt < attempts:
             sleep(delay)

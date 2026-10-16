@@ -301,11 +301,11 @@ def test_config_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("WB_TOKEN", "t")
     monkeypatch.setenv("DAYS", "0")
     monkeypatch.setenv("EXCEL_PATH", "rep/x.xlsx")
-    monkeypatch.setenv("WB_STATS_URL", "http://s")
+    monkeypatch.setenv("WB_STATS_URL", "https://s")
     cfg = config.load()
     assert cfg.token == "t" and cfg.days == 1  # не меньше одного дня
     assert cfg.excel_path == config.ROOT / "rep" / "x.xlsx"
-    assert cfg.stats_url == "http://s"
+    assert cfg.stats_url == "https://s"
     monkeypatch.setenv("EXCEL_PATH", str(tmp_path / "a.xlsx"))
     assert config.load().excel_path == tmp_path / "a.xlsx"
 

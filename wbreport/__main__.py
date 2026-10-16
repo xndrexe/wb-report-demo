@@ -97,12 +97,20 @@ def _days(v: str) -> int:
     return n
 
 
+def _minutes(v: str) -> int:
+    """--every: 0 — один раз, иначе минуты между запусками; минус уронил бы sleep после первого отчёта."""
+    n = int(v)
+    if n < 0:
+        raise argparse.ArgumentTypeError("нужно целое число минут, не меньше 0")
+    return n
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="wbreport", description="Отчёт Wildberries или Ozon в таблицу")
     ap.add_argument("--market", choices=config.MARKETS, help="площадка (по умолчанию из .env, wb)")
     ap.add_argument("--demo", action="store_true", help="выдуманный магазин на местном сервере вместо API")
     ap.add_argument("--days", type=_days, help="за сколько дней (по умолчанию из .env, 30)")
-    ap.add_argument("--every", type=int, default=0, metavar="MIN", help="повторять каждые MIN минут")
+    ap.add_argument("--every", type=_minutes, default=0, metavar="MIN", help="повторять каждые MIN минут")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 

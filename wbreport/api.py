@@ -12,12 +12,25 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import date, timedelta
+from urllib.parse import quote
 
 import requests
 
 log = logging.getLogger(__name__)
 
 PAGE_ROWS = 80_000  # условный потолок строк одного ответа orders/sales
+MAX_RETRY_DELAY = 300.0  # дольше пяти минут не ждём, что бы ни просил сервер
+
+
+def retry_delay(header: str | None, attempt: int) -> float:
+    """Пауза перед повтором из заголовка ответа; мусор, «inf», «nan» и минус — своя растущая пауза."""
+    try:
+        delay = float(header or 0)
+    except ValueError:
+        delay = 0.0
+    if not 0 < delay < float("inf"):  # nan сюда тоже не пройдёт
+        delay = min(60, 5 * attempt)
+    return min(delay, MAX_RETRY_DELAY)
 
 
 class WBError(RuntimeError):
@@ -55,7 +68,7 @@ class WBClient:
             self._last_call[key] = time.monotonic()
             if resp.status_code == 429 or resp.status_code >= 500:
                 # WB подсказывает, сколько ждать, в X-Ratelimit-Retry
-                delay = float(resp.headers.get("X-Ratelimit-Retry", 0) or 0) or min(60, 5 * attempt)
+                delay = retry_delay(resp.headers.get("X-Ratelimit-Retry"), attempt)
                 log.warning(
                     "%s -> %s, retry in %.0fs (%d/%d)", path, resp.status_code, delay, attempt, attempts
                 )
@@ -98,7 +111,8 @@ class WBClient:
             "/api/v1/warehouse_remains",
             {"groupByNm": "true", "groupBySa": "true", "locale": "ru"},
         )
-        task_id = task["data"]["taskId"]
+        # id задания вставляется в путь: экранируем, чтобы «../» или «?» из ответа не сменили адрес
+        task_id = quote(str(task["data"]["taskId"]), safe="")
         waited = 0.0
         while True:
             status = self._get("analytics", f"/api/v1/warehouse_remains/tasks/{task_id}/status")["data"][
