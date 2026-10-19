@@ -203,3 +203,22 @@ def test_excel_drops_control_chars_instead_of_crashing(tmp_path):
 def test_gsheet_tab_and_cr_prefixed_formula_gets_apostrophe(text):
     values = export._gsheet_values(Sheet("Реклама", ["Кампания"], [[text]]))
     assert values[1] == ["'" + text]
+
+
+@pytest.mark.parametrize(
+    "text", ["＝1+1", "＋7 999", "－5", "＠SUM(1)", "  =1+1", "\u3000=1+1", " ＝HYPERLINK(1)"]
+)
+def test_gsheet_fullwidth_and_spaced_formula_gets_apostrophe(text):
+    values = export._gsheet_values(Sheet("Реклама", ["Кампания"], [[text]]))
+    assert values[1] == ["'" + text]  # само значение не меняем
+
+
+@pytest.mark.parametrize("value", ["Пледы", " Пледы", 10, 0.5, "", None])
+def test_gsheet_plain_values_untouched(value):
+    assert export._gsheet_values(Sheet("Реклама", ["Кампания"], [[value]]))[1] == [value]
+
+
+def test_excel_keeps_fullwidth_text_as_is(tmp_path):
+    sheet = Sheet("Реклама", ["Кампания"], [["＝1+1"]])
+    path = export.to_excel([sheet], tmp_path / "r.xlsx")
+    assert load_workbook(path)["Реклама"]["A2"].value == "＝1+1"

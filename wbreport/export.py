@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -16,7 +17,8 @@ THEMES = {"wb": ("7B2D8E", "EFE6F3"), "ozon": ("005BFF", "E5EEFF")}
 WARN = PatternFill("solid", fgColor="F8D7DA")
 # названия кампаний, товаров и причины возвратов приходят из кабинета: текст с «=» в начале
 # Excel и Google сочли бы формулой (=HYPERLINK, =IMPORTXML могут увести данные наружу)
-FORMULA_START = ("=", "+", "-", "@", "\t", "\r")  # таб и возврат каретки — тоже (OWASP)
+FORMULA_SIGNS = ("=", "+", "-", "@")
+FORMULA_START = (*FORMULA_SIGNS, "\t", "\r")  # таб и возврат каретки — тоже (OWASP)
 
 
 def _values(sheet: Sheet) -> list[list]:
@@ -71,10 +73,17 @@ def to_excel(sheets: list[Sheet], path: Path, theme: str = "wb") -> Path:
     return path
 
 
+def _looks_like_formula(text: str) -> bool:
+    """Google может принять за формулу и широкий «＝», и «=» после пробелов —
+    сверяем ещё и приведённый к обычным знакам текст без пробелов слева."""
+    plain = unicodedata.normalize("NFKC", text).lstrip()
+    return text.startswith(FORMULA_START) or plain.startswith(FORMULA_SIGNS)
+
+
 def _gsheet_values(sheet: Sheet) -> list[list]:
     """Текст, похожий на формулу, — с апострофом: при USER_ENTERED Google его не исполнит и не покажет."""
     return [
-        [f"'{v}" if isinstance(v, str) and v.startswith(FORMULA_START) else v for v in row]
+        [f"'{v}" if isinstance(v, str) and _looks_like_formula(v) else v for v in row]
         for row in _values(sheet)
     ]
 
