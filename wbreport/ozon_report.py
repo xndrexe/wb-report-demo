@@ -170,9 +170,10 @@ def stocks_sheet(products: list[dict], fbo: list[dict], postings: list[dict], da
     """Артикул × кластер Ozon, свой склад, в пути, заказы в день и на сколько дней хватит."""
     ordered = _ordered_units(postings)
     names = {i.get("offer_id"): i.get("name", "") for p in postings for i in p.get("products", [])}
-    by_sku: dict[int, dict] = defaultdict(_no_stock)
+    # SKU сравниваем строкой: в разных методах Ozon он то число, то строка, а остатки не должны обнулиться
+    by_sku: dict[str, dict] = defaultdict(_no_stock)
     for row in fbo:
-        s = by_sku[row.get("sku")]
+        s = by_sku[str(row.get("sku"))]
         s["clusters"][row.get("cluster_name") or row.get("warehouse_name", "")] += row.get(
             "available_stock_count", 0
         )
@@ -205,7 +206,7 @@ def stocks_sheet(products: list[dict], fbo: list[dict], postings: list[dict], da
             for s in stocks
             if s.get("type") in OWN_STOCK_TYPES
         )
-        f = by_sku.get(sku) or _no_stock()  # get, а не [], чтобы не плодить пустые записи
+        f = by_sku.get(str(sku)) or _no_stock()  # get, а не [], чтобы не плодить пустые записи
         at_ozon = sum(f["clusters"].values())
         rate = ordered.get(p.get("offer_id", ""), 0) / days
         sheet.rows.append(

@@ -541,3 +541,11 @@ def test_stocks_product_without_fbo_rows_and_unknown_sku():
     sh = ozon_report.stocks_sheet(products, fbo, [posting("2026-10-14T07:00:00Z", qty=3)], days=1)
     assert sh.headers[3] == "Казань"
     assert sh.rows == [["A", 7, "Плед", 0, 0, 3, 0, 0, 3.0, 1]]
+
+
+def test_stocks_sku_string_in_analytics_matches_number_in_products():
+    # в методах Ozon sku бывает и числом, и строкой — остатки на складах Ozon не должны обнулиться
+    products = [{"offer_id": "A", "stocks": [{"type": "fbs", "sku": 7, "present": 1, "reserved": 0}]}]
+    fbo = [{"sku": "7", "cluster_name": "Казань", "available_stock_count": 4}]
+    sh = ozon_report.stocks_sheet(products, fbo, [], days=1)
+    assert sh.rows[0][1] == 7 and sh.rows[0][3] == 4
