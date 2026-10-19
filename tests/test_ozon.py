@@ -558,6 +558,8 @@ class LoopSession:
         self.pages, self.headers, self.calls = pages, {}, 0
 
     def post(self, url, json=None, **kw):
+        # без защиты клиент ходил бы вечно — тест должен краснеть, а не висеть
+        assert self.calls < 20, "ходит по кругу"
         page = self.pages[self.calls % len(self.pages)]
         self.calls += 1
         return type("R", (), {"status_code": 200, "headers": {}, "text": "", "json": lambda self: page})()
