@@ -310,6 +310,20 @@ def test_config_from_env(monkeypatch, tmp_path):
     assert config.load().excel_path == tmp_path / "a.xlsx"
 
 
+@pytest.mark.parametrize("name", ["DAYS", "MARKETPLACE"])
+def test_config_empty_value_means_default(monkeypatch, name):
+    # пустая строка в .env, как у EXCEL_PATH=, — значит «по умолчанию», а не ошибка
+    monkeypatch.setenv(name, "")
+    cfg = config.load()
+    assert cfg.days == 30 and cfg.market == "wb"
+
+
+def test_config_days_not_a_number_is_a_clear_error(monkeypatch):
+    monkeypatch.setenv("DAYS", "месяц")
+    with pytest.raises(SystemExit, match="DAYS=месяц"):
+        config.load()
+
+
 def test_run_once_today_is_moscow_date(tmp_path, monkeypatch):
     # 22:30 UTC 14.10 — в Москве уже 15.10: заказ 15.10 по МСК должен попасть в период
     class Clock(app.datetime):

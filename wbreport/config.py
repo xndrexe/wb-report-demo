@@ -53,16 +53,24 @@ def api_url(name: str, default: str) -> str:
     raise SystemExit(f"{name}={url}: нужен адрес https://, иначе ключ пойдёт по сети открытым текстом")
 
 
+def _days(v: str) -> int:
+    """DAYS из .env: пусто — 30, меньше одного — один день."""
+    try:
+        return max(1, int(v or "30"))
+    except ValueError:
+        raise SystemExit(f"DAYS={v}: нужно целое число дней") from None
+
+
 def load() -> Settings:
     load_dotenv(ROOT / ".env")
     env = os.environ.get
-    market = env("MARKETPLACE", "wb").lower()
+    market = (env("MARKETPLACE") or "wb").lower()  # пустая строка в .env — как не заданная
     if market not in MARKETS:
         raise SystemExit(f"MARKETPLACE={market}: можно wb или ozon")
     return Settings(
         market=market,
         token=env("WB_TOKEN", ""),
-        days=max(1, int(env("DAYS", "30"))),
+        days=_days(env("DAYS", "")),
         excel_path=excel_for(market),
         gsheet_id=env("GSHEET_ID", ""),
         google_credentials=env("GOOGLE_CREDENTIALS", ""),
