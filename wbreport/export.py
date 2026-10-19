@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -15,11 +16,16 @@ THEMES = {"wb": ("7B2D8E", "EFE6F3"), "ozon": ("005BFF", "E5EEFF")}
 WARN = PatternFill("solid", fgColor="F8D7DA")
 # названия кампаний, товаров и причины возвратов приходят из кабинета: текст с «=» в начале
 # Excel и Google сочли бы формулой (=HYPERLINK, =IMPORTXML могут увести данные наружу)
-FORMULA_START = ("=", "+", "-", "@")
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")  # таб и возврат каретки — тоже (OWASP)
 
 
 def _values(sheet: Sheet) -> list[list]:
     return [sheet.headers, *sheet.rows, *([sheet.total] if sheet.total else [])]
+
+
+def _clean(v):
+    """Управляющие символы из названий в кабинете openpyxl не пишет и роняет весь отчёт — убираем их."""
+    return ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v
 
 
 def to_excel(sheets: list[Sheet], path: Path, theme: str = "wb") -> Path:
@@ -30,7 +36,7 @@ def to_excel(sheets: list[Sheet], path: Path, theme: str = "wb") -> Path:
     for sh in sheets:
         ws = wb.create_sheet(sh.title)
         for row in _values(sh):
-            ws.append(row)
+            ws.append([_clean(v) for v in row])
             for cell in ws[ws.max_row]:
                 if cell.data_type == "f":  # openpyxl пишет строку с «=» как формулу — храним текстом
                     cell.data_type = "s"

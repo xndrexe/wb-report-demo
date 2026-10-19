@@ -53,6 +53,11 @@ def _send(call: Callable[[], requests.Response], path: str, sleep, attempts: int
     """Запрос с повтором на 429 и сбоях Ozon; пауза — из Retry-After или своя, растущая."""
     for attempt in range(1, attempts + 1):
         resp = call()
+        if 300 <= resp.status_code < 400:
+            # по редиректу не идём: requests унёс бы Api-Key и client_secret на адрес из ответа
+            raise OzonError(
+                f"{path}: Ozon перенаправляет ({resp.status_code}) — по редиректам ключ не отправляем"
+            )
         if resp.status_code != 429 and resp.status_code < 500:
             return resp
         delay = retry_delay(resp.headers.get("Retry-After"), attempt)
@@ -79,7 +84,10 @@ class OzonClient:
 
     def _post(self, path: str, body: dict, attempts: int = 4) -> dict:
         resp = _send(
-            lambda: self.session.post(self.url + path, json=body, timeout=60), path, self.sleep, attempts
+            lambda: self.session.post(self.url + path, json=body, timeout=60, allow_redirects=False),
+            path,
+            self.sleep,
+            attempts,
         )
         if resp.status_code in (401, 403):
             raise OzonError(f"{path}: доступ запрещён ({resp.status_code}) — проверьте Client-Id и API-ключ")
@@ -225,7 +233,12 @@ class OzonAdsClient:
             "client_secret": self.client_secret,
             "grant_type": "client_credentials",
         }
-        resp = _send(lambda: self.session.post(self.url + path, json=body, timeout=60), path, self.sleep, 4)
+        resp = _send(
+            lambda: self.session.post(self.url + path, json=body, timeout=60, allow_redirects=False),
+            path,
+            self.sleep,
+            4,
+        )
         if resp.status_code >= 400:
             raise OzonError(
                 f"{path}: ключ рекламы не принят ({resp.status_code}) — проверьте client_id и client_secret"
@@ -242,7 +255,9 @@ class OzonAdsClient:
                 self._token = ""
             headers = {"Authorization": f"Bearer {self._auth()}"}
             resp = _send(
-                lambda h=headers: self.session.get(self.url + path, params=params, headers=h, timeout=120),
+                lambda h=headers: self.session.get(
+                    self.url + path, params=params, headers=h, timeout=120, allow_redirects=False
+                ),
                 path,
                 self.sleep,
                 4,

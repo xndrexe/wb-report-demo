@@ -64,7 +64,8 @@ class WBClient:
         if wait > 0 and key.endswith(("orders", "sales")):
             self.sleep(wait)
         for attempt in range(1, attempts + 1):
-            resp = self.session.get(url, params=params, timeout=60)
+            # без редиректов: на http того же хоста requests оставил бы токен в открытом виде
+            resp = self.session.get(url, params=params, timeout=60, allow_redirects=False)
             self._last_call[key] = time.monotonic()
             if resp.status_code == 429 or resp.status_code >= 500:
                 # WB подсказывает, сколько ждать, в X-Ratelimit-Retry
@@ -76,6 +77,10 @@ class WBClient:
                     break
                 self.sleep(delay)
                 continue
+            if 300 <= resp.status_code < 400:
+                raise WBError(
+                    f"{path}: WB перенаправляет ({resp.status_code}) — по редиректам токен не отправляем"
+                )
             if resp.status_code in (401, 403):
                 raise WBError(f"{path}: доступ запрещён ({resp.status_code}) — проверьте токен и его права")
             if resp.status_code >= 400:

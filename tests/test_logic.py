@@ -144,7 +144,7 @@ class Session:
         self.headers = {}
         self.calls = []
 
-    def get(self, url, params=None, timeout=None):
+    def get(self, url, params=None, timeout=None, **kw):
         self.calls.append((url, params))
         r = self.responses.pop(0)
         return r(url, params) if callable(r) else r
