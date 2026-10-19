@@ -54,7 +54,9 @@ def sales_sheet(orders: list[dict], sales: list[dict], ads: list[dict], start: d
         x["sales_rub"] += sign * abs(s.get("priceWithDisc", 0))
         x["for_pay"] += sign * abs(s.get("forPay", 0))
     for a in ads:
-        d[_day(a["updTime"])]["ads"] += abs(a.get("updSum", 0))
+        # updTime в API WB может быть null (nullable в SDK): дня нет — в разбивку по дням не идёт,
+        # а в итог по кампании на листе «Реклама» сумма попадает
+        d[_day(a.get("updTime") or "")]["ads"] += abs(a.get("updSum", 0))
 
     sheet = Sheet(
         "Продажи и заказы",
@@ -159,7 +161,7 @@ def ads_sheet(ads: list[dict]) -> Sheet:
         )
         c["sum"] += abs(a.get("updSum", 0))
         c["n"] += 1
-        c["last"] = max(c["last"], a.get("updTime", ""))
+        c["last"] = max(c["last"], a.get("updTime") or "")
     sheet = Sheet(
         "Реклама", ["Кампания", "ID", "Тип", "Расход, ₽", "Списаний", "Последнее списание"], money_cols={3}
     )

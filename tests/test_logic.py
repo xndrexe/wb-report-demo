@@ -338,3 +338,15 @@ def test_run_once_today_is_moscow_date(tmp_path, monkeypatch):
     sheets = app.run_once(cfg, fc)
     assert fc.asked["orders"] == date(2026, 10, 15)
     assert sheets[0].rows[0][:2] == ["15.10.2026", 1]
+
+
+def test_ads_null_upd_time_does_not_crash():
+    # в SDK WB updTime помечен nullable — списание без времени не должно ронять отчёт
+    ads = [
+        {"advertId": 1, "updSum": 100, "updTime": None},
+        {"advertId": 1, "updSum": 50, "updTime": "2026-10-14T10:00:00"},
+    ]
+    sh = report.sales_sheet([], [], ads, D, D)
+    assert sh.rows[0][8] == 50
+    row = report.ads_sheet(ads).rows[0]
+    assert row[3] == 150 and row[4] == 2 and row[5] == "14.10.2026 10:00"
