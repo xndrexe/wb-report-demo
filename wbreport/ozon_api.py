@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable, Iterator
 from datetime import date, datetime, timedelta
@@ -65,6 +66,23 @@ def _send(call: Callable[[], requests.Response], path: str, sleep, attempts: int
         if attempt < attempts:
             sleep(delay)
     raise OzonError(f"{path}: Ozon не ответил за {attempts} попытки")
+
+
+def _ttl(value) -> float:
+    """Срок токена рекламы: nan, минус или мусор давали бы новый токен на каждый вызов — берём 30 мин."""
+    try:
+        ttl = float(value)
+    except (TypeError, ValueError):
+        return 1800.0
+    return ttl if math.isfinite(ttl) and 0 < ttl <= 1800 else 1800.0
+
+
+def _fresh(cursor, seen: set, path: str):
+    """Курсор листания, который ещё не встречался; повтор — Ozon водит по кругу, обход бы не кончился."""
+    if cursor in seen:
+        raise OzonError(f"{path}: Ozon вернул уже пройденную страницу — листание остановлено")
+    seen.add(cursor)
+    return cursor
 
 
 class OzonClient:
@@ -131,7 +149,7 @@ class OzonClient:
 
     def fbs_postings(self, since: datetime, to: datetime) -> list[dict]:
         rows: dict[str, dict] = {}
-        cursor = ""
+        cursor, seen = "", set()
         while True:
             body = {
                 "filter": {"since": _z(since), "to": _z(to)},
@@ -146,11 +164,12 @@ class OzonClient:
             cursor = page.get("cursor") or ""
             if not page.get("has_next") or not cursor:
                 return list(rows.values())
+            _fresh(cursor, seen, "/v4/posting/fbs/list")
 
     def products(self) -> list[dict]:
         """Все товары кабинета (кроме архива) с SKU и остатками на своём складе."""
         items: list[dict] = []
-        cursor = ""
+        cursor, seen = "", set()
         while True:
             body = {"filter": {"visibility": "ALL"}, "limit": 1000}
             if cursor:
@@ -160,6 +179,7 @@ class OzonClient:
             cursor = page.get("cursor") or ""
             if not page.get("items") or not cursor:
                 return items
+            _fresh(cursor, seen, "/v4/product/info/stocks")
 
     def fbo_stocks(self, skus: list[int]) -> list[dict]:
         """Остатки на складах Ozon: строка на товар × склад."""
@@ -172,7 +192,7 @@ class OzonClient:
     def returns(self, since: datetime, to: datetime) -> list[dict]:
         """Возвраты за период — по дате возврата на склад (logistic_return_date), не по дате заявки."""
         rows: list[dict] = []
-        last_id = 0
+        last_id, seen = 0, set()
         while True:
             page = self._post(
                 "/v1/returns/list",
@@ -186,12 +206,12 @@ class OzonClient:
             rows.extend(got)
             if not page.get("has_next") or not got:
                 return rows
-            last_id = got[-1]["id"]
+            last_id = _fresh(got[-1]["id"], seen, "/v1/returns/list")
 
     def accruals(self, day: date) -> list[dict]:
         """Начисления за один день: продажи, комиссии, доставка, услуги."""
         rows: list[dict] = []
-        last_id = ""
+        last_id, seen = "", {""}
         while True:
             page = self._post("/v1/finance/accrual/by-day", {"date": day.isoformat(), "last_id": last_id})
             got = page.get("accruals") or []
@@ -199,7 +219,7 @@ class OzonClient:
             nxt = page.get("last_id") or ""
             if not got or not nxt or nxt == last_id:
                 return rows
-            last_id = nxt
+            last_id = _fresh(nxt, seen, "/v1/finance/accrual/by-day")
 
 
 class OzonAdsClient:
@@ -246,7 +266,7 @@ class OzonAdsClient:
             )
         data = resp.json()
         self._token = data["access_token"]
-        self._expires = self.clock() + float(data.get("expires_in") or 1800)
+        self._expires = self.clock() + _ttl(data.get("expires_in"))
         return self._token
 
     def _get(self, path: str, params: dict | None = None):

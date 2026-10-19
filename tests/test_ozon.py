@@ -549,3 +549,70 @@ def test_stocks_sku_string_in_analytics_matches_number_in_products():
     fbo = [{"sku": "7", "cluster_name": "Казань", "available_stock_count": 4}]
     sh = ozon_report.stocks_sheet(products, fbo, [], days=1)
     assert sh.rows[0][1] == 7 and sh.rows[0][3] == 4
+
+
+class LoopSession:
+    """Ozon водит по кругу: страницы с курсорами по очереди, потом снова сначала."""
+
+    def __init__(self, pages):
+        self.pages, self.headers, self.calls = pages, {}, 0
+
+    def post(self, url, json=None, **kw):
+        page = self.pages[self.calls % len(self.pages)]
+        self.calls += 1
+        return type("R", (), {"status_code": 200, "headers": {}, "text": "", "json": lambda self: page})()
+
+
+@pytest.mark.parametrize(
+    "method, args, pages",
+    [
+        (
+            "fbs_postings",
+            (SINCE, TO),
+            [
+                {"postings": [{"posting_number": n}], "cursor": c, "has_next": True}
+                for n, c in (("1", "a"), ("2", "b"))
+            ],
+        ),
+        ("products", (), [{"items": [{"sku": n}], "cursor": c} for n, c in ((1, "a"), (2, "b"))]),
+        ("returns", (SINCE, TO), [{"returns": [{"id": i}], "has_next": True} for i in (1, 2)]),
+        ("accruals", (TODAY,), [{"accruals": [{"x": 1}], "last_id": c} for c in ("a", "b")]),
+    ],
+)
+def test_cursor_loop_stops(method, args, pages):
+    # сервер начал отдавать курсоры по кругу — ошибка, а не вечный обход
+    s = LoopSession(pages)
+    c = OzonClient("cid", "key", url="https://o", session=s, sleep=lambda _: None)
+    with pytest.raises(OzonError, match="уже пройденную"):
+        getattr(c, method)(*args)
+    assert s.calls <= 4
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", -5, "abc", None, 0, 99999])
+def test_ads_token_ttl_sane(value):
+    # срок токена из ответа без смысла — считаем 30 минут, а не просим токен на каждый вызов
+    assert ozon_api._ttl(value) == 1800.0
+
+
+def test_ads_token_ttl_kept():
+    assert ozon_api._ttl(600) == 600.0
+
+
+def test_ads_token_reused_when_ttl_is_nan():
+    class S:
+        headers, posts = {}, 0
+
+        def post(self, url, json=None, **kw):
+            S.posts += 1
+            body = {"access_token": "t", "expires_in": "nan"}
+            return type("R", (), {"status_code": 200, "headers": {}, "text": "", "json": lambda self: body})()
+
+        def get(self, url, **kw):
+            return type(
+                "R", (), {"status_code": 200, "headers": {}, "text": "", "json": lambda self: {"list": []}}
+            )()
+
+    c = OzonAdsClient("id", "secret", url="https://p", session=S(), sleep=lambda _: None)
+    c.campaigns()
+    c.campaigns()
+    assert S.posts == 1
