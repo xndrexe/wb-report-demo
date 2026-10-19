@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .report import LOW_STOCK_DAYS, Sheet, _num, _pct
@@ -37,7 +37,10 @@ def msk_day(ts: str) -> str:
     """2026-10-13T22:30:00Z → 2026-10-14: после 21:00 UTC в Москве уже следующий день."""
     if not ts:
         return ""
-    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(MSK).date().isoformat()
+    t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if t.tzinfo is None:  # без пояса — это UTC, как все даты Ozon, а не часы сервера
+        t = t.replace(tzinfo=UTC)
+    return t.astimezone(MSK).date().isoformat()
 
 
 def _date(row: dict) -> str:
@@ -63,6 +66,11 @@ def _rub(v) -> float:
         return float(v)
     s = str(v or "").replace("\u00a0", "").replace(" ", "").replace(",", ".")
     return float(s) if s else 0.0
+
+
+def _return_day(r: dict) -> str:
+    """Московский день возврата; logistic бывает null — тогда дня нет."""
+    return msk_day((r.get("logistic") or {}).get("return_date") or "")
 
 
 def _is_return(r: dict) -> bool:
@@ -97,9 +105,7 @@ def sales_sheet(
                 x["cancels"] += qty
     for r in returns:
         if _is_return(r):
-            d[msk_day(r.get("logistic", {}).get("return_date", ""))]["returns"] += r.get("product", {}).get(
-                "quantity", 1
-            )
+            d[_return_day(r)]["returns"] += (r.get("product") or {}).get("quantity", 1)
     for a in accruals:
         x = d[_date(a)]
         amount = _money(a.get("total_amount"))
@@ -330,7 +336,7 @@ def items_sheet(postings: list[dict], returns: list[dict]) -> Sheet:
     for r in returns:
         if not _is_return(r):
             continue
-        prod = r.get("product", {})
+        prod = r.get("product") or {}  # null в ответе — как пустой товар
         x = row(prod.get("offer_id", ""), prod.get("sku", ""), prod.get("name", ""))
         x["returns"] += prod.get("quantity", 1)
         if r.get("return_reason_name"):
@@ -391,7 +397,7 @@ def in_period(postings: list[dict], returns: list[dict], accruals: list[dict], s
     """Только строки, чей московский день внутри периода: Ozon режет по UTC, края могут вылезти."""
     return (
         _within(postings, lambda p: msk_day(p.get("in_process_at", "")), start, end),
-        _within(returns, lambda r: msk_day(r.get("logistic", {}).get("return_date", "")), start, end),
+        _within(returns, _return_day, start, end),
         _within(accruals, _date, start, end),
     )
 

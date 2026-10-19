@@ -484,3 +484,60 @@ def test_ads_client_only_with_performance_key(monkeypatch):
     assert isinstance(seen["ads"], OzonAdsClient)
     assert seen["ads"].client_id == "42@advertising.performance.ozon.ru" and seen["ads"].client_secret == "s"
     assert seen["ads"].url == "https://api-performance.ozon.ru"
+
+
+# --- пограничные входы разбора ------------------------------------------------
+
+
+def test_msk_day_without_zone_is_utc_not_server_clock(monkeypatch):
+    # 22:30 без пояса — по документации это UTC, то есть 01:30 МСК следующего дня;
+    # на сервере во Владивостоке (+10) прежде выходило 15:30 МСК того же дня
+    import time
+
+    monkeypatch.setenv("TZ", "Asia/Vladivostok")
+    time.tzset()
+    try:
+        assert ozon_report.msk_day("2026-10-13T22:30:00") == "2026-10-14"
+        assert ozon_report.msk_day("2026-10-13T22:30:00+03:00") == "2026-10-13"  # свой пояс — как есть
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+
+
+def test_return_with_null_logistic_and_product_does_not_crash():
+    odd = {"type": "ClientReturn", "logistic": None, "product": None, "return_reason_name": "Брак"}
+    p, r, a = ozon_report.in_period([], [odd, ret("2026-10-14T10:00:00Z")], [], D, D)
+    assert len(r) == 1  # без даты возврата — вне периода, а не ошибка
+    sh = ozon_report.sales_sheet([], [odd], [], D, D)
+    assert sh.rows[0][6] == 0
+    items = ozon_report.items_sheet([], [odd])
+    assert items.rows == [["", "", "", 0, 0, 0, 1, "", "Брак"]]
+
+
+def test_build_cuts_ads_to_period_and_works_without_campaigns():
+    daily = [ad("1", "2026-10-14", "100,00"), ad("1", "2026-10-13", "999,00")]  # 13.10 — до периода
+    sheets = ozon_report.build([], [], [], [], [], D, D, None, daily)
+    assert [s.title for s in sheets] == [
+        "Продажи и заказы",
+        "Остатки",
+        "Реклама",
+        "Заказы и возвраты по товарам",
+    ]
+    assert sheets[0].total[-2] == 100
+    assert sheets[2].rows[0][:4] == ["Пледы", 1, "", ""]  # списка кампаний нет — имя из статистики
+    no_ads = ozon_report.build([], [], [], [], [], D, D)
+    assert "Реклама" not in [s.title for s in no_ads]
+
+
+def test_ads_sheet_views_without_spend_is_shown_but_has_no_days():
+    sh = ozon_report.ads_sheet([], [ad("abc", "2026-10-14", "0,00", views=50, clicks=0, orders=0, money="0")])
+    assert sh.rows[0][1] == "abc"  # id не числом — оставляем строкой
+    assert sh.rows[0][4:8] == [0, 50, 0, 0.0] and sh.rows[0][11:] == [0, ""]
+
+
+def test_stocks_product_without_fbo_rows_and_unknown_sku():
+    products = [{"offer_id": "A", "stocks": [{"type": "fbs", "sku": 7, "present": 3, "reserved": 0}]}]
+    fbo = [{"sku": 8, "cluster_name": "Казань", "available_stock_count": 5}]  # чужой SKU
+    sh = ozon_report.stocks_sheet(products, fbo, [posting("2026-10-14T07:00:00Z", qty=3)], days=1)
+    assert sh.headers[3] == "Казань"
+    assert sh.rows == [["A", 7, "Плед", 0, 0, 3, 0, 0, 3.0, 1]]
