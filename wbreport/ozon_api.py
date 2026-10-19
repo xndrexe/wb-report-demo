@@ -162,7 +162,7 @@ class OzonClient:
         return rows
 
     def returns(self, since: datetime, to: datetime) -> list[dict]:
-        """Возвраты, оформленные за период (по дате создания возврата)."""
+        """Возвраты за период — по дате возврата на склад (logistic_return_date), не по дате заявки."""
         rows: list[dict] = []
         last_id = 0
         while True:

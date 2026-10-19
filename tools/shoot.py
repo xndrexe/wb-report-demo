@@ -1,6 +1,7 @@
 """Снимает build/screens/*.html в docs/screens/*.png (Playwright, Chromium).
 
-python tools/shoot.py   # нужен pip install playwright && playwright install chromium
+.venv/bin/python tools/shoot.py
+нужен Playwright: .venv/bin/pip install playwright && .venv/bin/playwright install chromium
 """
 
 from __future__ import annotations

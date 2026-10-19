@@ -1,3 +1,5 @@
+"""Листы отчёта WB из готовых строк: суммы, возвраты, отмены, прогноз остатков."""
+
 from datetime import date
 
 from wbreport import report
