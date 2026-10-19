@@ -72,30 +72,22 @@ def sales_sheet(orders: list[dict], sales: list[dict], ads: list[dict], start: d
         ],
         money_cols={2, 6, 7, 8},
     )
+    keys = ("orders", "orders_rub", "cancels", "buyouts", "returns", "sales_rub", "for_pay", "ads")
     tot = defaultdict(float)
     day = end
     while day >= start:  # свежие дни сверху
         x = d.get(day.isoformat(), {})
-        vals = [
-            x.get(k, 0)
-            for k in ("orders", "orders_rub", "cancels", "buyouts", "returns", "sales_rub", "for_pay", "ads")
-        ]
-        for k, v in zip(
-            ("orders", "orders_rub", "cancels", "buyouts", "returns", "sales_rub", "for_pay", "ads"),
-            vals,
-            strict=True,
-        ):
-            tot[k] += v
-        sheet.rows.append([day.strftime("%d.%m.%Y"), *(_num(v) for v in vals), _pct(vals[7], vals[1])])
+        for k in keys:
+            tot[k] += x.get(k, 0)
+        sheet.rows.append(
+            [
+                day.strftime("%d.%m.%Y"),
+                *(_num(x.get(k, 0)) for k in keys),
+                _pct(x.get("ads", 0), x.get("orders_rub", 0)),
+            ]
+        )
         day -= timedelta(days=1)
-    sheet.total = [
-        "Итого",
-        *(
-            _num(tot[k])
-            for k in ("orders", "orders_rub", "cancels", "buyouts", "returns", "sales_rub", "for_pay", "ads")
-        ),
-        _pct(tot["ads"], tot["orders_rub"]),
-    ]
+    sheet.total = ["Итого", *(_num(tot[k]) for k in keys), _pct(tot["ads"], tot["orders_rub"])]
     return sheet
 
 

@@ -40,6 +40,11 @@ def msk_day(ts: str) -> str:
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(MSK).date().isoformat()
 
 
+def _date(row: dict) -> str:
+    """День строки начислений или статистики рекламы: дата уже московская, без пояса."""
+    return str(row.get("date", ""))[:10]
+
+
 def _price(item: dict) -> float:
     """Цена товара в отправлении: у FBO — строкой, у FBS (v4) — объектом с amount."""
     v = item.get("price")
@@ -96,12 +101,12 @@ def sales_sheet(
                 "quantity", 1
             )
     for a in accruals:
-        x = d[str(a.get("date", ""))[:10]]
+        x = d[_date(a)]
         amount = _money(a.get("total_amount"))
         x["posting_acc" if a.get("accrued_category") == "POSTING" else "other_acc"] += amount
         x["total_acc"] += amount
     for a in ads or []:
-        d[str(a.get("date", ""))[:10]]["ads"] += _rub(a.get("moneySpent"))
+        d[_date(a)]["ads"] += _rub(a.get("moneySpent"))
 
     sheet = Sheet(
         "Продажи и заказы",
@@ -126,10 +131,9 @@ def sales_sheet(
     day = end
     while day >= start:  # свежие дни сверху
         x = d.get(day.isoformat(), {})
-        vals = [x.get(k, 0) for k in keys]
-        for k, v in zip(keys, vals, strict=True):
-            tot[k] += v
-        row = [day.strftime("%d.%m.%Y"), *(_num(v) for v in vals)]
+        for k in keys:
+            tot[k] += x.get(k, 0)
+        row = [day.strftime("%d.%m.%Y"), *(_num(x.get(k, 0)) for k in keys)]
         if ads is not None:
             row.append(_pct(x.get("ads", 0), x.get("rub", 0)))
         sheet.rows.append(row)
@@ -151,11 +155,16 @@ def _ordered_units(postings: list[dict]) -> Counter:
     return c
 
 
+def _no_stock() -> dict:
+    """Пустая запись остатков FBO по SKU: товара нет ни в одном кластере."""
+    return {"clusters": Counter(), "transit": 0, "back": 0}
+
+
 def stocks_sheet(products: list[dict], fbo: list[dict], postings: list[dict], days: int) -> Sheet:
     """Артикул × кластер Ozon, свой склад, в пути, заказы в день и на сколько дней хватит."""
     ordered = _ordered_units(postings)
     names = {i.get("offer_id"): i.get("name", "") for p in postings for i in p.get("products", [])}
-    by_sku: dict[int, dict] = defaultdict(lambda: {"clusters": Counter(), "transit": 0, "back": 0})
+    by_sku: dict[int, dict] = defaultdict(_no_stock)
     for row in fbo:
         s = by_sku[row.get("sku")]
         s["clusters"][row.get("cluster_name") or row.get("warehouse_name", "")] += row.get(
@@ -190,7 +199,7 @@ def stocks_sheet(products: list[dict], fbo: list[dict], postings: list[dict], da
             for s in stocks
             if s.get("type") in OWN_STOCK_TYPES
         )
-        f = by_sku.get(sku, {"clusters": Counter(), "transit": 0, "back": 0})
+        f = by_sku.get(sku) or _no_stock()  # get, а не [], чтобы не плодить пустые записи
         at_ozon = sum(f["clusters"].values())
         rate = ordered.get(p.get("offer_id", ""), 0) / days
         sheet.rows.append(
@@ -240,7 +249,7 @@ def ads_sheet(campaigns: list[dict], daily: list[dict]) -> Sheet:
         c["orders_rub"] += _rub(r.get("ordersMoney"))
         if spent > 0:
             c["days"] += 1
-            c["last"] = max(c["last"], str(r.get("date", ""))[:10])
+            c["last"] = max(c["last"], _date(r))
     sheet = Sheet(
         "Реклама",
         [
@@ -373,13 +382,17 @@ def items_sheet(postings: list[dict], returns: list[dict]) -> Sheet:
     return sheet
 
 
+def _within(rows: list[dict], day_of, start: date, end: date) -> list[dict]:
+    lo, hi = start.isoformat(), end.isoformat()
+    return [r for r in rows if lo <= day_of(r) <= hi]
+
+
 def in_period(postings: list[dict], returns: list[dict], accruals: list[dict], start: date, end: date):
     """Только строки, чей московский день внутри периода: Ozon режет по UTC, края могут вылезти."""
-    lo, hi = start.isoformat(), end.isoformat()
     return (
-        [p for p in postings if lo <= msk_day(p.get("in_process_at", "")) <= hi],
-        [r for r in returns if lo <= msk_day(r.get("logistic", {}).get("return_date", "")) <= hi],
-        [x for x in accruals if lo <= str(x.get("date", ""))[:10] <= hi],
+        _within(postings, lambda p: msk_day(p.get("in_process_at", "")), start, end),
+        _within(returns, lambda r: msk_day(r.get("logistic", {}).get("return_date", "")), start, end),
+        _within(accruals, _date, start, end),
     )
 
 
@@ -398,8 +411,7 @@ def build(
     postings, returns, accruals = in_period(postings, returns, accruals, start, end)
     days = (end - start).days + 1
     if ad_daily is not None:
-        lo, hi = start.isoformat(), end.isoformat()
-        ad_daily = [r for r in ad_daily if lo <= str(r.get("date", ""))[:10] <= hi]
+        ad_daily = _within(ad_daily, _date, start, end)
     sheets = [
         sales_sheet(postings, returns, accruals, start, end, ad_daily),
         stocks_sheet(products, fbo, postings, days),

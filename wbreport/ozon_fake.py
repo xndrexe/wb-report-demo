@@ -106,16 +106,15 @@ def generate(today: date, days: int = 45, seed: int = 11) -> dict:
                 )
                 schema = "FBO" if rnd.random() < 0.75 else "FBS"
                 qty = 2 if rnd.random() < 0.08 else 1
-                age = back
-                status = (
-                    "cancelled"
-                    if rnd.random() < 0.06
-                    else "delivered"
-                    if age > 4
-                    else "delivering"
-                    if age > 1
-                    else "awaiting_deliver"
-                )
+                # статус по возрасту заказа в днях: старые доставлены, свежие ещё в пути
+                if rnd.random() < 0.06:
+                    status = "cancelled"
+                elif back > 4:
+                    status = "delivered"
+                elif back > 1:
+                    status = "delivering"
+                else:
+                    status = "awaiting_deliver"
                 payout = round(price * qty * 0.78, 2)
                 posting = {
                     "posting_number": f"{40000000 + n}-0001-1",
