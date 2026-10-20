@@ -88,18 +88,10 @@ def render_sheet(path: Path, title: str, caption: str, rows: int = 100) -> str:
 def wb_xlsx() -> Path:
     xlsx = Path(tempfile.mkdtemp()) / "wb_report.xlsx"
     with fake.FakeWB(fake.generate(TODAY)) as srv:
-        cfg = replace(
-            config.load(),
-            token=fake.TOKEN,
-            days=30,
-            excel_path=xlsx,
-            gsheet_id="",
-            stats_url=srv.url,
-            analytics_url=srv.url,
-            advert_url=srv.url,
-        )
+        # адреса и токен run_once берёт из клиента, в настройках нужны только период и куда сохранить
+        cfg = replace(config.load(), days=30, excel_path=xlsx, gsheet_id="")
         client = WBClient(
-            cfg.token,
+            fake.TOKEN,
             stats_url=srv.url,
             analytics_url=srv.url,
             advert_url=srv.url,

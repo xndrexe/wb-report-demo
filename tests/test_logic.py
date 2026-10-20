@@ -329,7 +329,7 @@ def test_run_once_today_is_moscow_date(tmp_path, monkeypatch):
     class Clock(app.datetime):
         @classmethod
         def now(cls, tz=None):
-            return app.datetime(2026, 10, 14, 22, 30, tzinfo=app.ZoneInfo("UTC")).astimezone(tz)
+            return app.datetime(2026, 10, 14, 22, 30, tzinfo=app.UTC).astimezone(tz)
 
     monkeypatch.setattr(app, "datetime", Clock)
     cfg = replace(config.load(), days=1, excel_path=tmp_path / "r.xlsx", gsheet_id="", google_credentials="")

@@ -19,19 +19,12 @@ TODAY = date(2026, 10, 14)
 def setup(tmp_path):
     data = fake.generate(TODAY, days=45)
     with fake.FakeWB(data) as srv:
+        # адреса и токен run_once берёт из клиента, в настройках — только период и выгрузка
         cfg = replace(
-            config.load(),
-            token=fake.TOKEN,
-            days=30,
-            excel_path=tmp_path / "r.xlsx",
-            gsheet_id="",
-            google_credentials="",
-            stats_url=srv.url,
-            analytics_url=srv.url,
-            advert_url=srv.url,
+            config.load(), days=30, excel_path=tmp_path / "r.xlsx", gsheet_id="", google_credentials=""
         )
         c = WBClient(
-            cfg.token,
+            fake.TOKEN,
             stats_url=srv.url,
             analytics_url=srv.url,
             advert_url=srv.url,

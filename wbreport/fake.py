@@ -149,25 +149,14 @@ def generate(today: date, days: int = 45, seed: int = 7) -> dict:
     return {"orders": orders, "sales": sales, "ads": ads, "stocks": stocks}
 
 
-class FakeWB:
-    """Местный сервер WB. fail — словарь путь → список кодов, которые отдать перед успехом."""
+class LocalServer:
+    """Общее для заглушек WB и Ozon: сервер на свободном порту, запуск в with, ответ JSON."""
 
-    def __init__(self, data: dict, fail: dict[str, list[int]] | None = None):
-        self.data = data
-        self.fail = fail or {}
-        self.calls: list[str] = []
-        fake = self
+    RETRY_HEADER = "Retry-After"  # в каком заголовке площадка подсказывает паузу на 429
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):
-                fake._handle(self)
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    def _listen(self, handler: type[BaseHTTPRequestHandler]) -> None:
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
-        self._polls = 0
 
     def __enter__(self):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -182,9 +171,31 @@ class FakeWB:
         h.send_response(code)
         h.send_header("Content-Type", "application/json")
         if code == 429:
-            h.send_header("X-Ratelimit-Retry", "1")
+            h.send_header(self.RETRY_HEADER, "1")
         h.end_headers()
         h.wfile.write(raw)
+
+
+class FakeWB(LocalServer):
+    """Местный сервер WB. fail — словарь путь → список кодов, которые отдать перед успехом."""
+
+    RETRY_HEADER = "X-Ratelimit-Retry"
+
+    def __init__(self, data: dict, fail: dict[str, list[int]] | None = None):
+        self.data = data
+        self.fail = fail or {}
+        self.calls: list[str] = []
+        self._polls = 0
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                fake._handle(self)
+
+        self._listen(Handler)
 
     def _handle(self, h) -> None:
         u = urlparse(h.path)

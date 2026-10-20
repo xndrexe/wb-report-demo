@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import json
 import random
-import threading
 from datetime import UTC, date, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
 
+from .fake import LocalServer
 from .ozon_report import MSK
 
 BRAND = "Уютный дом"
@@ -308,7 +308,7 @@ def _return(rnd: random.Random, posting: dict, kind: str, at: datetime, schema: 
     }
 
 
-class FakeOzon:
+class FakeOzon(LocalServer):
     """Местный сервер Ozon. fail — словарь путь → список кодов, которые отдать перед успехом."""
 
     PAGE = {"/v4/product/info/stocks": 1000, "/v1/finance/accrual/by-day": 50}
@@ -328,25 +328,7 @@ class FakeOzon:
             def do_POST(self):
                 fake._handle(self)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-
-    def __enter__(self):
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        return self
-
-    def __exit__(self, *exc):
-        self.server.shutdown()
-        self.server.server_close()
-
-    def _reply(self, h, code: int, body) -> None:
-        raw = json.dumps(body, ensure_ascii=False).encode()
-        h.send_response(code)
-        h.send_header("Content-Type", "application/json")
-        if code == 429:
-            h.send_header("Retry-After", "1")
-        h.end_headers()
-        h.wfile.write(raw)
+        self._listen(Handler)
 
     def _handle(self, h) -> None:
         path = h.path
@@ -408,7 +390,7 @@ class FakeOzon:
         }
 
 
-class FakePerformance:
+class FakePerformance(LocalServer):
     """Местный сервер Performance API: токен, кампании, дневная статистика. Лимит — 62 дня за выгрузку."""
 
     def __init__(self, data: dict, fail: dict[str, list[int]] | None = None, expires_in: int = 1800):
@@ -431,12 +413,7 @@ class FakePerformance:
                 url = urlsplit(self.path)
                 fake._handle(self, url.path, {k: v[0] for k, v in parse_qs(url.query).items()})
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-
-    __enter__ = FakeOzon.__enter__
-    __exit__ = FakeOzon.__exit__
-    _reply = FakeOzon._reply
+        self._listen(Handler)
 
     def revoke(self) -> None:
         """Отозвать выданные токены раньше срока — клиент должен взять новый."""

@@ -9,19 +9,17 @@ import time
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
-from zoneinfo import ZoneInfo
 
 from . import config, export, ozon_report, report
 from .api import WBClient
 from .ozon_api import OzonAdsClient, OzonClient
+from .ozon_report import MSK
 
 log = logging.getLogger("wbreport")
 
-# WB отдаёт даты по Москве без пояса: «сегодня» считаем так же, а не по часам сервера
-MSK = ZoneInfo("Europe/Moscow")
-
 
 def today_msk() -> date:
+    """WB отдаёт даты по Москве без пояса: «сегодня» считаем так же, а не по часам сервера."""
     return datetime.now(MSK).date()
 
 
