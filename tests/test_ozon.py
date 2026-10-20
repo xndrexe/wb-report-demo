@@ -173,8 +173,6 @@ def test_ads_rate_limit_is_retried(ads_data):
 
 # --- разбор ------------------------------------------------------------------
 
-D = date(2026, 10, 14)
-
 
 def posting(ts, offer="A", price="1000.0000", qty=1, status="delivered", schema="FBO"):
     item = {"offer_id": offer, "sku": 1, "name": "Плед", "quantity": qty}
@@ -217,14 +215,14 @@ def test_sales_by_day_fbo_fbs_cancels_returns_and_accruals():
         acc("2026-10-14", "-20.00", "ITEM"),
         acc("2026-10-14", "-100", "NON_ITEM"),
     ]
-    sh = ozon_report.sales_sheet(postings, returns, accruals, D, D)
+    sh = ozon_report.sales_sheet(postings, returns, accruals, TODAY, TODAY)
     assert sh.rows[0] == ["14.10.2026", 4, 2, 2, 2800, 1, 2, 780.5, -120, 660.5]
     assert sh.total[0] == "Итого" and sh.total[1:] == sh.rows[0][1:]
     assert sh.money_cols == {4, 7, 8, 9}
 
 
 def test_sales_rows_cover_every_day_newest_first():
-    sh = ozon_report.sales_sheet([], [], [], date(2026, 10, 12), D)
+    sh = ozon_report.sales_sheet([], [], [], date(2026, 10, 12), TODAY)
     assert [r[0] for r in sh.rows] == ["14.10.2026", "13.10.2026", "12.10.2026"]
     assert sh.total == ["Итого", 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
@@ -232,7 +230,7 @@ def test_sales_rows_cover_every_day_newest_first():
 def test_in_period_cuts_by_moscow_day():
     early = posting("2026-10-13T20:00:00Z")  # 23:00 МСК 13.10 — до периода
     late = posting("2026-10-14T20:59:00Z")  # 23:59 МСК 14.10 — внутри
-    p, r, a = ozon_report.in_period([early, late], [], [acc("2026-10-15", "1")], D, D)
+    p, r, a = ozon_report.in_period([early, late], [], [acc("2026-10-15", "1")], TODAY, TODAY)
     assert p == [late] and r == [] and a == []
 
 
@@ -291,7 +289,7 @@ def ad(cid, day, spent, views=1000, clicks=30, orders=2, money="3000,00", title=
 def test_sales_sheet_with_ads_spend_and_drr_by_day():
     postings = [posting("2026-10-14T07:00:00Z", price="2000.00", qty=2)]
     ads = [ad("1", "2026-10-14", "300,00"), ad("2", "2026-10-14", "100,00"), ad("1", "2026-10-13", "50,00")]
-    sh = ozon_report.sales_sheet(postings, [], [], date(2026, 10, 13), D, ads)
+    sh = ozon_report.sales_sheet(postings, [], [], date(2026, 10, 13), TODAY, ads)
     assert sh.headers[-2:] == ["Реклама, ₽", "ДРР, %"] and 10 in sh.money_cols
     assert sh.rows[0][-2:] == [400, 10.0]  # 400 ₽ рекламы к 4000 ₽ заказов
     assert sh.rows[1][-2:] == [50, ""]  # заказов нет — ДРР не считаем
@@ -299,9 +297,9 @@ def test_sales_sheet_with_ads_spend_and_drr_by_day():
 
 
 def test_sales_sheet_without_ads_key_has_no_ad_columns():
-    sh = ozon_report.sales_sheet([], [], [], D, D)
+    sh = ozon_report.sales_sheet([], [], [], TODAY, TODAY)
     assert "Реклама, ₽" not in sh.headers and len(sh.rows[0]) == len(sh.headers) == 10
-    with_key = ozon_report.sales_sheet([], [], [], D, D, [])
+    with_key = ozon_report.sales_sheet([], [], [], TODAY, TODAY, [])
     assert with_key.rows[0][-2:] == [0, ""]  # ключ есть, расхода не было — честный ноль
 
 
@@ -506,9 +504,9 @@ def test_msk_day_without_zone_is_utc_not_server_clock(monkeypatch):
 
 def test_return_with_null_logistic_and_product_does_not_crash():
     odd = {"type": "ClientReturn", "logistic": None, "product": None, "return_reason_name": "Брак"}
-    p, r, a = ozon_report.in_period([], [odd, ret("2026-10-14T10:00:00Z")], [], D, D)
+    p, r, a = ozon_report.in_period([], [odd, ret("2026-10-14T10:00:00Z")], [], TODAY, TODAY)
     assert len(r) == 1  # без даты возврата — вне периода, а не ошибка
-    sh = ozon_report.sales_sheet([], [odd], [], D, D)
+    sh = ozon_report.sales_sheet([], [odd], [], TODAY, TODAY)
     assert sh.rows[0][6] == 0
     items = ozon_report.items_sheet([], [odd])
     assert items.rows == [["", "", "", 0, 0, 0, 1, "", "Брак"]]
@@ -516,7 +514,7 @@ def test_return_with_null_logistic_and_product_does_not_crash():
 
 def test_build_cuts_ads_to_period_and_works_without_campaigns():
     daily = [ad("1", "2026-10-14", "100,00"), ad("1", "2026-10-13", "999,00")]  # 13.10 — до периода
-    sheets = ozon_report.build([], [], [], [], [], D, D, None, daily)
+    sheets = ozon_report.build([], [], [], [], [], TODAY, TODAY, None, daily)
     assert [s.title for s in sheets] == [
         "Продажи и заказы",
         "Остатки",
@@ -525,7 +523,7 @@ def test_build_cuts_ads_to_period_and_works_without_campaigns():
     ]
     assert sheets[0].total[-2] == 100
     assert sheets[2].rows[0][:4] == ["Пледы", 1, "", ""]  # списка кампаний нет — имя из статистики
-    no_ads = ozon_report.build([], [], [], [], [], D, D)
+    no_ads = ozon_report.build([], [], [], [], [], TODAY, TODAY)
     assert "Реклама" not in [s.title for s in no_ads]
 
 
